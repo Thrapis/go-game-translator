@@ -101,3 +101,26 @@ func TestWriteDropsUnmatchableTarget(t *testing.T) {
 		t.Error("unmatchable target was written")
 	}
 }
+
+// A reference target (an official localization) keeps its own markup:
+// reordered codes reuse source ids, unknown ones get fresh ids after them.
+func TestWriteLooseTargetCodes(t *testing.T) {
+	f := &File{
+		SourceLang: "ru", TargetLang: "en", LooseTargetCodes: true,
+		Units: []Unit{{
+			ID:     "1",
+			Source: []Piece{{"{a}", true}, {" и ", false}, {"{b}", true}, {" ", false}, {"{c}", true}},
+			Target: []Piece{{"{b}", true}, {" and ", false}, {"{a}", true}, {" ", false}, {"<br>", true}},
+			State:  "final",
+		}},
+	}
+	var buf bytes.Buffer
+	dropped, err := Write(&buf, f)
+	if err != nil || dropped != nil {
+		t.Fatalf("dropped %v err %v", dropped, err)
+	}
+	want := `<target state="final"><ph id="2">{b}</ph> and <ph id="1">{a}</ph> <ph id="4">&lt;br&gt;</ph></target>`
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, buf.String())
+	}
+}

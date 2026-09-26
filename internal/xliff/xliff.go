@@ -40,6 +40,11 @@ type File struct {
 	SourceLang string
 	TargetLang string
 	Units      []Unit
+	// LooseTargetCodes keeps targets whose codes do not map one-to-one to the
+	// source: an unmatched target code gets a fresh id after the source's.
+	// Only for reference files (e.g. an official localization as target); Read
+	// rejects such units, so they cannot be imported back.
+	LooseTargetCodes bool
 }
 
 // Plain concatenates pieces back into the native string.
@@ -53,7 +58,7 @@ func Plain(ps []Piece) string {
 
 // Write serialises f. A unit whose target codes cannot all be matched to a
 // source code of the same text is written without a target; its id is
-// returned in dropped.
+// returned in dropped. With f.LooseTargetCodes nothing is dropped.
 func Write(w io.Writer, f *File) (dropped []string, err error) {
 	bw := bufio.NewWriter(w)
 	bw.WriteString(xml.Header)
@@ -63,7 +68,7 @@ func Write(w io.Writer, f *File) (dropped []string, err error) {
 	bw.WriteString("    <body>\n")
 	for _, u := range f.Units {
 		srcIDs := codeIDs(u.Source)
-		tgtIDs, ok := matchCodes(u.Source, srcIDs, u.Target)
+		tgtIDs, ok := matchCodes(u.Source, srcIDs, u.Target, f.LooseTargetCodes)
 		fmt.Fprintf(bw, `      <trans-unit id="%s" xml:space="preserve">`+"\n", attr(u.ID))
 		bw.WriteString("        <source>")
 		writeSegment(bw, u.Source, srcIDs)
@@ -106,10 +111,15 @@ func codeIDs(ps []Piece) []int {
 }
 
 // matchCodes gives each target code the id of an unused source code with the
-// same text. ok is false if some target code has no such source code.
-func matchCodes(src []Piece, srcIDs []int, tgt []Piece) (ids []int, ok bool) {
+// same text. ok is false if some target code has no such source code, unless
+// loose, in which case that code gets the next id after the source's.
+func matchCodes(src []Piece, srcIDs []int, tgt []Piece, loose bool) (ids []int, ok bool) {
 	used := make([]bool, len(src))
 	ids = make([]int, len(tgt))
+	next := 0
+	for _, id := range srcIDs {
+		next = max(next, id)
+	}
 	for i, p := range tgt {
 		if !p.Code {
 			continue
@@ -122,7 +132,11 @@ func matchCodes(src []Piece, srcIDs []int, tgt []Piece) (ids []int, ok bool) {
 			}
 		}
 		if !found {
-			return nil, false
+			if !loose {
+				return nil, false
+			}
+			next++
+			ids[i] = next
 		}
 	}
 	return ids, true

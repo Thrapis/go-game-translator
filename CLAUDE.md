@@ -29,6 +29,7 @@ go run ./tools/csvsplit -in "path/to/dialogue.csv"
 go run ./tools/cp77loc export -in <raw> -out <flat-ru>
 go run ./tools/cp77loc xliff -in <flat-be> -out <xliff-be>   # XLIFF 1.2 for human review
 go run ./tools/cp77loc import -template <raw> -in <flat-be|xliff-be> -out <be>
+go run ./tools/cp77loc ref -in <raw> -ref-lang-dir en-us -out <xliff-ru-en>   # official loc as reference XLIFF
 go run ./tools/cp77loc verify -in <raw>      # every string re-encoded must be byte-identical
 ```
 
