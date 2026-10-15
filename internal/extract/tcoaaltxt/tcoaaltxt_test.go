@@ -136,3 +136,24 @@ func TestRegistered(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEntriesExposeSectionHeaderAndValue(t *testing.T) {
+	d, _, err := ParseDoc(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := d.Entries()
+	byTag := map[string]Entry{}
+	for i, e := range es {
+		if e.Index != i {
+			t.Errorf("entry %d has Index %d", i, e.Index)
+		}
+		byTag[e.Tag] = e
+	}
+	if e := byTag["#a2"]; e.Section != "Map001.json" || e.Header != "#a2 (Andrew)" || e.Value != `"Ah."` {
+		t.Errorf("#a2 = %+v", e)
+	}
+	if e := byTag["MENUS/New Game"]; e.Section != "MENUS" || e.Value != "New Game" {
+		t.Errorf("MENUS entry = %+v", e)
+	}
+}

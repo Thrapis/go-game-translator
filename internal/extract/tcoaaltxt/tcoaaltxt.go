@@ -59,6 +59,9 @@ type slot struct {
 	line   int
 	prefix string // value == lines[line][len(prefix):]
 	tag    string // replica id, for grouping consecutive value lines
+	// section and header locate the slot for tools; they do not affect Compose.
+	section string // "[SECTION]" name the slot sits in
+	header  string // "#id (Speaker)" block header line, "" outside blocks
 }
 
 // ParseDoc reads a combined dialogue.txt and reports the newline it uses.
@@ -79,13 +82,14 @@ func ParseDoc(r io.Reader) (*Doc, string, error) {
 	kind := kindMeta
 	section := ""
 	blockID := ""
+	blockHeader := ""
 
 	for i, rl := range rawLines {
 		line := strings.TrimSuffix(rl, "\r")
 		d.lines[i] = line
 
 		if name, ok := bracketName(line); ok {
-			kind, section, blockID = kindOf(name), name, ""
+			kind, section, blockID, blockHeader = kindOf(name), name, "", ""
 			continue
 		}
 		if strings.TrimSpace(line) == "" {
@@ -95,7 +99,7 @@ func ParseDoc(r io.Reader) (*Doc, string, error) {
 		switch kind {
 		case kindBare:
 			// LANGUAGE: the whole line is the value, keyed by the section name.
-			d.slots = append(d.slots, slot{line: i, prefix: "", tag: section})
+			d.slots = append(d.slots, slot{line: i, prefix: "", tag: section, section: section})
 		case kindKV:
 			if p := kvPrefix(line); p != "" {
 				tag := ""
@@ -104,22 +108,22 @@ func ParseDoc(r io.Reader) (*Doc, string, error) {
 				} else { // FONT / CREDITS / LABELS / MENUS: keyed by section + key text
 					tag = section + "/" + strings.TrimRight(strings.TrimSuffix(p, " : "), " ")
 				}
-				d.slots = append(d.slots, slot{line: i, prefix: p, tag: tag})
+				d.slots = append(d.slots, slot{line: i, prefix: p, tag: tag, section: section})
 			}
 		case kindBlock:
 			switch {
 			case strings.HasPrefix(line, "#"):
 				if p, id := inlineEntry(line); p != "" {
-					d.slots = append(d.slots, slot{line: i, prefix: p, tag: id})
+					d.slots = append(d.slots, slot{line: i, prefix: p, tag: id, section: section})
 				} else {
-					blockID = blockHeaderID(line)
+					blockID, blockHeader = blockHeaderID(line), line
 				}
 			case strings.HasPrefix(line, ":"):
 				p := ":"
 				if strings.HasPrefix(line, ": ") {
 					p = ": "
 				}
-				d.slots = append(d.slots, slot{line: i, prefix: p, tag: blockID})
+				d.slots = append(d.slots, slot{line: i, prefix: p, tag: blockID, section: section, header: blockHeader})
 			}
 		}
 	}
@@ -167,6 +171,25 @@ func (d *Doc) lineData() []extract.DataLine {
 			Value: d.lines[sl.line][len(sl.prefix):],
 			Tag:   sl.tag,
 		}
+	}
+	return out
+}
+
+// Entry is one translatable slot, for tools that need more than extract.DataLine.
+type Entry struct {
+	Index   int    // position among the slots; equals the DataLine Key
+	Section string // "[SECTION]" name, e.g. "MENUS" or "Map001.json"
+	Header  string // "#id (Speaker)" block header, "" outside blocks
+	Tag     string // replica id, as in extract.DataLine.Tag
+	Value   string // the translatable text
+}
+
+// Entries lists every translatable slot in document order.
+func (d *Doc) Entries() []Entry {
+	out := make([]Entry, len(d.slots))
+	for i, sl := range d.slots {
+		out[i] = Entry{Index: i, Section: sl.section, Header: sl.header, Tag: sl.tag,
+			Value: d.lines[sl.line][len(sl.prefix):]}
 	}
 	return out
 }

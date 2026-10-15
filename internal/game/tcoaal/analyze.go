@@ -126,3 +126,31 @@ func (analyzer) Mask(ps *markup.PartialString) (string, []string) {
 	}
 	return b.String(), markers
 }
+
+// Piece is a run of a string as shown to a human translator: free text, or a
+// Code - engine control symbol that must reach the game unchanged.
+type Piece struct {
+	Text string
+	Code bool
+}
+
+// Pieces splits s for human translation (e.g. XLIFF export). Only the engine
+// control symbols (\fi \fr \fb, \{ \}, \c[n]) are codes; quotes, brackets and
+// dot runs are masked from the machine translator but are ordinary text to a
+// person. Adjacent pieces of the same kind are merged.
+func Pieces(s string) []Piece {
+	var out []Piece
+	for _, p := range (analyzer{}).Analyze(s).Parts {
+		code := false
+		switch p.Type {
+		case typeStyleSymbol, typeFontSizeSymbol, typeColorSymbol:
+			code = true
+		}
+		if n := len(out); n > 0 && out[n-1].Code == code && !code {
+			out[n-1].Text += p.Value
+		} else {
+			out = append(out, Piece{Text: p.Value, Code: code})
+		}
+	}
+	return out
+}

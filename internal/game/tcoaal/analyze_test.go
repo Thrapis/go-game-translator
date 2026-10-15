@@ -90,3 +90,32 @@ func TestTranslateSubstitutionKeepsSymbols(t *testing.T) {
 		t.Errorf("source text leaked into output: %q", got)
 	}
 }
+
+func TestPiecesLockOnlyEngineCodes(t *testing.T) {
+	got := Pieces(`\c[2]Ashley\c[0]: "hello"... \fiyes\fr (ok)`)
+	want := []Piece{
+		{Text: `\c[2]`, Code: true},
+		{Text: `Ashley`},
+		{Text: `\c[0]`, Code: true},
+		{Text: `: "hello"... `},
+		{Text: `\fi`, Code: true},
+		{Text: `yes`},
+		{Text: `\fr`, Code: true},
+		{Text: ` (ok)`},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d pieces %v, want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("piece %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	var joined string
+	for _, p := range got {
+		joined += p.Text
+	}
+	if joined != `\c[2]Ashley\c[0]: "hello"... \fiyes\fr (ok)` {
+		t.Errorf("pieces do not concatenate back to the input: %q", joined)
+	}
+}
