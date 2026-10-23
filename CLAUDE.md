@@ -29,7 +29,9 @@ go run ./tools/csvsplit -in "path/to/dialogue.csv"
 go run ./tools/cp77loc export -in <raw> -out <flat-ru>
 go run ./tools/cp77loc xliff -in <flat-be> -out <xliff-be>   # XLIFF 1.2 for human review
 go run ./tools/cp77loc import -template <raw> -in <flat-be|xliff-be> -out <be>
-go run ./tools/cp77loc ref -in <raw> -ref-lang-dir en-us -out <xliff-ru-en>   # official loc as reference XLIFF
+go run ./tools/cp77loc ref -in <raw> -ref-lang-dir en-us -out <xliff-ru-en> [-extra-from cz-cz]   # official loc as reference XLIFF
+go run ./tools/cp77loc update -in <raw> -prev <old xliff-be> -out <new> [-extra-from cz-cz] [-delta <csv>] [-fill <csv>]   # new game version: carry translations over by unchanged source
+go run ./tools/cp77loc port -from <be-json> -template <raw> -out <be-cz> [-report <csv>]   # translated ru-ru onto cz-cz (mod replacing Czech)
 go run ./tools/cp77loc verify -in <raw>      # every string re-encoded must be byte-identical
 ```
 
@@ -125,8 +127,12 @@ WolvenKit JSON (`*.json.json`) is never an extract format. `tools/cp77loc`
 flattens it to `crowdin-csv` (`id,source,translation,context`; id =
 `primaryKey`/`stringId`, the male variant is `id@male`). This CSV is what the
 pipeline and Crowdin both read and write. `[en_us]…` VO placeholders and
-glitch text are never exported. Glitch text is deliberately corrupted Zalgo
-stored as Latin-1 mojibake, detected by U+0080–U+009F characters. The analyzer
+glitch text are never exported, except with `update`/`ref -extra-from <lang>`: a
+placeholder-only variant whose counterpart in that language has real text then
+becomes a unit (its tags stripped), so a mod built on that language can cover it.
+Glitch text is deliberately corrupted Zalgo
+stored as Latin-1 mojibake, detected by U+0080–U+009F characters (a single
+stray one inside real Cyrillic text is a localization typo, not glitch text). The analyzer
 also marks both kinds verbatim (`cyberpunk2077.Untranslatable`), as a safety
 net. `import` goes back through
 `internal/wolvenkit.Splice`, which rewrites **only** the variant string literals

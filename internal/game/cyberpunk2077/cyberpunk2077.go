@@ -33,6 +33,16 @@ var voPlaceholderRe = regexp.MustCompile(`^\[[A-Za-z]{2}_[A-Za-z]{2}\]`)
 // placeholder in every language. Such strings are never translated.
 func IsVOPlaceholder(s string) bool { return voPlaceholderRe.MatchString(s) }
 
+// StripVOPlaceholder drops the leading tags of a VO placeholder, the language
+// tag and any dev tags like [db_db] after it ("[en_us][db_db]use" -> "use");
+// other strings are returned unchanged.
+func StripVOPlaceholder(s string) string {
+	for voPlaceholderRe.MatchString(s) {
+		s = voPlaceholderRe.ReplaceAllString(s, "")
+	}
+	return s
+}
+
 var c1ControlRe = regexp.MustCompile(`[\x{80}-\x{9F}]`)
 
 // IsGlitchText reports whether s is one of the game's deliberately "corrupted"
@@ -40,7 +50,15 @@ var c1ControlRe = regexp.MustCompile(`[\x{80}-\x{9F}]`)
 // as Latin-1, which leaves C1 control characters (U+0080-U+009F) in it. Real
 // Russian/Belarusian text never contains those. Such strings are never
 // translated.
-func IsGlitchText(s string) bool { return c1ControlRe.MatchString(s) }
+//
+// A single stray control character inside real Cyrillic text is not a glitch
+// effect but a typo in one localization (the same line is clean in the others),
+// so such text is translatable; the deliberate effects inside Cyrillic text
+// carry several.
+func IsGlitchText(s string) bool {
+	n := len(c1ControlRe.FindAllStringIndex(s, -1))
+	return n > 0 && (n > 1 || !cyrillic.MatchString(s))
+}
 
 // Untranslatable reports whether s must be kept exactly as the source.
 func Untranslatable(s string) bool { return IsVOPlaceholder(s) || IsGlitchText(s) }

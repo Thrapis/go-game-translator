@@ -6,7 +6,9 @@
 //	cp77loc xliff  -in flat-be -out xliff-be  # CSV tree -> XLIFF tree
 //	cp77loc import -template raw -in flat-be -out be   # CSV or XLIFF tree -> JSON tree
 //	cp77loc ref -in raw -ref-lang-dir en-us -out xliff-ru-en  # official loc as reference XLIFF
-//	cp77loc verify -in raw                    # byte-exact re-encode check
+//	cp77loc update -in raw -prev xliff-be -out xliff-be-new  # carry translations over to an updated raw
+//	cp77loc port -from be-json -template raw -out be-cz [-report ids.csv]  # translated ru-ru onto the cz-cz resources
+//	cp77loc verify -in raw                   # byte-exact re-encode check
 //
 // export writes one CSV per resource that has text, mirroring the tree
 // (x.json.json -> x.csv). Rows: the female (default) variant under the entry
@@ -68,6 +70,10 @@ func main() {
 		err = cmdImport(args)
 	case "ref":
 		err = cmdRef(args)
+	case "update":
+		err = cmdUpdate(args)
+	case "port":
+		err = cmdPort(args)
 	case "verify":
 		err = cmdVerify(args)
 	default:
@@ -84,7 +90,9 @@ func usage() {
   cp77loc export -in <raw json tree> -out <csv tree>
   cp77loc xliff -in <csv tree> -out <xliff tree> [-source-lang ru] [-target-lang be]
   cp77loc import -template <raw json tree> -in <translated csv or xliff tree> -out <json tree>
-  cp77loc ref -in <raw json tree> -ref-lang-dir en-us -out <xliff tree> [-source-dir ru-ru] [-source-lang ru] [-target-lang en]
+  cp77loc ref -in <raw json tree> -ref-lang-dir en-us -out <xliff tree> [-source-dir ru-ru] [-source-lang ru] [-target-lang en] [-extra-from cz-cz]
+  cp77loc update -in <raw json tree> -prev <old xliff tree> -out <xliff tree> [-changed drop|keep] [-extra-from cz-cz] [-delta <csv tree>] [-fill <csv tree>]
+  cp77loc port -from <translated json tree> -template <raw json tree> -out <json tree> [-source-dir ru-ru] [-target-dir cz-cz] [-report <csv>]
   cp77loc verify -in <raw json tree>`)
 	os.Exit(2)
 }
@@ -185,6 +193,12 @@ func cmdExport(args []string) error {
 type skipped struct{ placeholders, glitch int }
 
 func exportRows(f *wolvenkit.File, sk *skipped) (rows []crowdincsv.Row, dups []string) {
+	return exportRowsWith(f, sk, nil)
+}
+
+// exportRowsWith is exportRows that also exports the VO-placeholder variants
+// named in extra (key -> text to use as the source), see placeholderGaps.
+func exportRowsWith(f *wolvenkit.File, sk *skipped, extra map[string]string) (rows []crowdincsv.Row, dups []string) {
 	seen := map[string]bool{}
 	for _, e := range f.Entries {
 		gendered := e.Female != "" && e.Male != ""
@@ -196,7 +210,10 @@ func exportRows(f *wolvenkit.File, sk *skipped) (rows []crowdincsv.Row, dups []s
 			if text == "" {
 				continue
 			}
-			if cyberpunk2077.IsVOPlaceholder(text) {
+			key := e.Key(male)
+			if x, ok := extra[key]; ok && cyberpunk2077.IsVOPlaceholder(text) {
+				text = x // may still start with a tag that looks like a placeholder
+			} else if cyberpunk2077.IsVOPlaceholder(text) {
 				sk.placeholders++
 				continue
 			}
@@ -204,7 +221,6 @@ func exportRows(f *wolvenkit.File, sk *skipped) (rows []crowdincsv.Row, dups []s
 				sk.glitch++
 				continue
 			}
-			key := e.Key(male)
 			if seen[key] {
 				dups = append(dups, key)
 				continue
@@ -456,6 +472,7 @@ func cmdRef(args []string) error {
 	refDir := fl.String("ref-lang-dir", "", "language folder of the reference translation, e.g. en-us (required)")
 	srcLang := fl.String("source-lang", "ru", "source language code")
 	tgtLang := fl.String("target-lang", "en", "target language code")
+	extra := fl.String("extra-from", "", "language folder (e.g. cz-cz) whose real text makes VO-placeholder-only source strings units too")
 	required(fl, args, "in", "out", "ref-lang-dir")
 
 	var files, units, targets, loose, noRef, missing int
@@ -490,11 +507,15 @@ func cmdRef(args []string) error {
 			}
 		}
 
-		rows, _ := exportRows(f, &sk)
+		ex, err := extrasFor(*in, rel, *srcDir, *extra, f)
+		if err != nil {
+			return err
+		}
+		rows, _ := exportRowsWith(f, &sk, ex)
 		x := &xliff.File{Original: filepath.ToSlash(csvRel(rel)), SourceLang: *srcLang, TargetLang: *tgtLang, LooseTargetCodes: true}
 		for _, r := range rows {
 			src := cyberpunk2077.Pieces(r.Source)
-			if !cyberpunk2077.HasCyrillicText(src) {
+			if _, isExtra := ex[r.ID]; !isExtra && !cyberpunk2077.HasCyrillicText(src) {
 				continue
 			}
 			u := xliff.Unit{ID: r.ID, Note: r.Context, Source: toXLIFF(src)}
