@@ -48,7 +48,9 @@ func TestPortEntries(t *testing.T) {
 	if !reflect.DeepEqual(r.Tr, want) {
 		t.Errorf("Tr = %v\nwant %v", r.Tr, want)
 	}
-	if want := map[string]bool{"2@male": true}; !reflect.DeepEqual(r.Blank, want) {
+	// Every slot mirrors the source: no male text there empties the male
+	// variant, no text at all empties the female one (6).
+	if want := map[string]bool{"2@male": true, "6": true}; !reflect.DeepEqual(r.Blank, want) {
 		t.Errorf("Blank = %v, want %v", r.Blank, want)
 	}
 	if got := ids(r.OnlyTemplate); !reflect.DeepEqual(got, []string{"3"}) {
@@ -57,10 +59,10 @@ func TestPortEntries(t *testing.T) {
 	if got := ids(r.OnlyFrom); !reflect.DeepEqual(got, []string{"7"}) {
 		t.Errorf("OnlyFrom = %v, want [7]", got)
 	}
-	// Czech text that the source cannot replace is a gap; a template
-	// placeholder (5) and an id missing from the source (3) are not.
-	if want := []portGap{{Entry: tmpl.Entries[5], Why: "source empty"}}; !reflect.DeepEqual(r.Gaps, want) {
-		t.Errorf("Gaps = %+v, want %+v", r.Gaps, want)
+	// Only a slot emptied because the source has no usable text is reported; a
+	// template placeholder (5) and an id missing from the source (3) are not.
+	if want := []portGap{{Entry: tmpl.Entries[5], Why: "source empty"}}; !reflect.DeepEqual(r.Emptied, want) {
+		t.Errorf("Emptied = %+v, want %+v", r.Emptied, want)
 	}
 }
 
@@ -68,7 +70,7 @@ func TestPortEntriesSkipsGlitchAndPlaceholders(t *testing.T) {
 	glitch := "Ã\u0082\u0083zalgo" // contains U+0083, the mark of corrupted glitch text
 	tmpl := &wolvenkit.File{Entries: []wolvenkit.Entry{
 		entry("1", glitch, ""),      // template text is glitch: keep it
-		entry("2", "cz f", ""),      // source text is a VO placeholder: keep Czech
+		entry("2", "cz f", ""),      // source text is a VO placeholder: nothing to mirror, emptied
 		entry("3", "[en_us] a", ""), // placeholder on both sides: nothing to port, nothing missing
 	}}
 	from := &wolvenkit.File{Entries: []wolvenkit.Entry{
@@ -80,27 +82,29 @@ func TestPortEntriesSkipsGlitchAndPlaceholders(t *testing.T) {
 	if len(r.Tr) != 0 {
 		t.Errorf("Tr = %v, want nothing ported", r.Tr)
 	}
-	if want := []portGap{{Entry: tmpl.Entries[1], Why: "source VO placeholder"}}; !reflect.DeepEqual(r.Gaps, want) {
-		t.Errorf("Gaps = %+v, want %+v", r.Gaps, want)
+	if want := map[string]bool{"2": true}; !reflect.DeepEqual(r.Blank, want) {
+		t.Errorf("Blank = %v, want %v", r.Blank, want)
+	}
+	if want := []portGap{{Entry: tmpl.Entries[1], Why: "source VO placeholder"}}; !reflect.DeepEqual(r.Emptied, want) {
+		t.Errorf("Emptied = %+v, want %+v", r.Emptied, want)
 	}
 }
 
-// A male variant only counts as a gap when neither the source's male nor its
-// female text can serve it.
-func TestPortEntriesGapMaleVariant(t *testing.T) {
+// A slot the source cannot fill is emptied, whichever variant it is.
+func TestPortEntriesEmptiesUnfilledSlots(t *testing.T) {
 	tmpl := &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "cz f", "cz m")}}
 	from := &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "", "")}}
 	r := portEntries(tmpl, from)
 	want := []portGap{{Entry: tmpl.Entries[0], Why: "source empty"}, {Entry: tmpl.Entries[0], Male: true, Why: "source empty"}}
-	if !reflect.DeepEqual(r.Gaps, want) {
-		t.Errorf("Gaps = %+v, want %+v", r.Gaps, want)
+	if !reflect.DeepEqual(r.Emptied, want) || !reflect.DeepEqual(r.Blank, map[string]bool{"1": true, "1@male": true}) || len(r.Tr) != 0 {
+		t.Errorf("empty source: %+v", r)
 	}
 
 	// Female text only: the Czech male variant is removed, not copied.
 	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "be", "")}}
 	r = portEntries(tmpl, from)
-	if len(r.Gaps) != 0 || !reflect.DeepEqual(r.Tr, map[string]string{"1": "be"}) || !r.Blank["1@male"] {
-		t.Errorf("want female ported and male removed: %+v", r)
+	if len(r.Emptied) != 0 || !reflect.DeepEqual(r.Tr, map[string]string{"1": "be"}) || !reflect.DeepEqual(r.Blank, map[string]bool{"1@male": true}) {
+		t.Errorf("female only: %+v", r)
 	}
 
 	// A male text identical to the female one is not a distinct male text.
@@ -110,11 +114,11 @@ func TestPortEntriesGapMaleVariant(t *testing.T) {
 		t.Errorf("identical male text: %+v", r)
 	}
 
-	// The source has nothing usable for the female variant: Czech stays whole.
+	// A VO placeholder is no text to mirror either: both slots are emptied.
 	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "[en_us] x", "")}}
 	r = portEntries(tmpl, from)
-	if len(r.Tr) != 0 || len(r.Blank) != 0 || len(r.Gaps) != 2 {
-		t.Errorf("unusable source: %+v", r)
+	if len(r.Tr) != 0 || len(r.Blank) != 2 || len(r.Emptied) != 2 || r.Emptied[1].Why != "source VO placeholder" {
+		t.Errorf("placeholder source: %+v", r)
 	}
 }
 
@@ -138,45 +142,80 @@ func TestPortEntriesSameMaleText(t *testing.T) {
 	}
 }
 
-// A source that has text only in its male variant (the female one is empty or
-// a placeholder) still has to fill the template's female variant, which is the
-// universal one, or the female text of the template would stay. The male text
-// then adds nothing distinct and the template's male variant is emptied.
-func TestPortEntriesFemaleFromMale(t *testing.T) {
+// The game takes the male text for male V and falls back to the female one, and
+// some ids have a male text but no female one. Each slot therefore mirrors the
+// same slot of the source: its text, or empty when the source has none. A male
+// text is never copied into the female slot.
+func TestPortEntriesMirrorsSlots(t *testing.T) {
 	tmpl := &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "cz f", "cz m")}}
 	for _, female := range []string{"", "[en_us] placeholder"} {
 		from := &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", female, "be m")}}
 		r := portEntries(tmpl, from)
-		if !reflect.DeepEqual(r.Tr, map[string]string{"1": "be m"}) || !r.Blank["1@male"] || len(r.Gaps) != 0 {
+		why := unusableWhy(female)
+		if !reflect.DeepEqual(r.Tr, map[string]string{"1@male": "be m"}) || !reflect.DeepEqual(r.Blank, map[string]bool{"1": true}) ||
+			!reflect.DeepEqual(r.Emptied, []portGap{{Entry: tmpl.Entries[0], Why: why}}) {
 			t.Errorf("female %q: %+v", female, r)
 		}
 	}
 
-	// An empty template male variant stays empty.
+	// An empty template male variant is filled from the source's male text.
 	tmpl = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "cz f", "")}}
 	from := &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "", "be m")}}
-	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1": "be m"}) || len(r.Blank) != 0 {
+	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1@male": "be m"}) || !r.Blank["1"] {
 		t.Errorf("empty template male: %+v", r)
 	}
 
-	// A template female placeholder is replaced as well.
+	// A template placeholder is a stub, not text, but when the id has real text
+	// in another slot of the source it is emptied like any other leftover.
+	tmpl = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "[en_us][pl_pl]stub", "")}}
+	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1@male": "be m"}) || !reflect.DeepEqual(r.Blank, map[string]bool{"1": true}) {
+		t.Errorf("template female stub next to a male text: %+v", r)
+	}
+	tmpl = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "cz f", "[en_us]Woah!")}}
+	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "be f", "")}}
+	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1": "be f"}) || !reflect.DeepEqual(r.Blank, map[string]bool{"1@male": true}) {
+		t.Errorf("template male stub next to a female text: %+v", r)
+	}
+	// A stub on both sides stays: there is no text to mirror and nothing to empty.
 	tmpl = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "[en_us] voice", "")}}
-	if r := portEntries(tmpl, from); r.Tr["1"] != "be m" {
-		t.Errorf("template placeholder: %+v", r)
+	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "[en_us] voice", "")}}
+	if r := portEntries(tmpl, from); len(r.Tr) != 0 || len(r.Blank) != 0 || len(r.Emptied) != 0 {
+		t.Errorf("stub on both sides: %+v", r)
 	}
 
-	// A male-only line (both the template and the source have an empty female
-	// variant) stays male-only: the male text goes to the male variant.
+	// A male-only line stays male-only.
 	tmpl = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "", "cz m")}}
 	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "", "be m")}}
-	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1@male": "be m"}) || len(r.Blank) != 0 {
+	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1@male": "be m"}) || len(r.Blank) != 0 || len(r.Emptied) != 0 {
 		t.Errorf("male-only line: %+v", r)
 	}
 
-	// No male text either: still a gap, Czech stays.
-	tmpl = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "cz f", "cz m")}}
-	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "", "")}}
-	if r := portEntries(tmpl, from); len(r.Tr) != 0 || len(r.Gaps) != 2 {
-		t.Errorf("nothing to port: %+v", r)
+	// A Czech male-only line whose source has a female text gets that text.
+	from = &wolvenkit.File{Entries: []wolvenkit.Entry{entry("1", "be f", "be m")}}
+	if r := portEntries(tmpl, from); !reflect.DeepEqual(r.Tr, map[string]string{"1": "be f", "1@male": "be m"}) {
+		t.Errorf("female added: %+v", r)
+	}
+}
+
+// A template string that is glitch effect plus Czech text is replaced by a
+// source string of the same kind (readable text around the effect); the effect
+// itself comes with the source text. A plain source text does not replace a
+// template glitch string.
+func TestPortEntriesMixedGlitch(t *testing.T) {
+	fx := "Ì¶Í\u0083Í\u0087"
+	tmpl := &wolvenkit.File{Entries: []wolvenkit.Entry{
+		entry("1", "e"+fx+"no_data", ""),
+		entry("2", "Ve spojitosti"+fx, ""),
+		entry("3", "e"+fx+"no_data", ""),
+	}}
+	from := &wolvenkit.File{Entries: []wolvenkit.Entry{
+		entry("1", "e"+fx+"няма_дадзеных", ""),
+		entry("2", "Па справе"+fx, ""),
+		entry("3", "няма", ""),
+	}}
+	r := portEntries(tmpl, from)
+	want := map[string]string{"1": "e" + fx + "няма_дадзеных", "2": "Па справе" + fx}
+	if !reflect.DeepEqual(r.Tr, want) {
+		t.Errorf("Tr = %v\nwant %v", r.Tr, want)
 	}
 }

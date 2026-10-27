@@ -31,7 +31,7 @@ go run ./tools/cp77loc xliff -in <flat-be> -out <xliff-be>   # XLIFF 1.2 for hum
 go run ./tools/cp77loc import -template <raw> -in <flat-be|xliff-be> -out <be>
 go run ./tools/cp77loc ref -in <raw> -ref-lang-dir en-us -out <xliff-ru-en> [-extra-from cz-cz]   # official loc as reference XLIFF
 go run ./tools/cp77loc update -in <raw> -prev <old xliff-be> -out <new> [-extra-from cz-cz] [-delta <csv>] [-fill <csv>]   # new game version: carry translations over by unchanged source
-go run ./tools/cp77loc port -from <be-json> -template <raw> -out <be-cz> [-report <csv>]   # translated ru-ru onto cz-cz (mod replacing Czech)
+go run ./tools/cp77loc port -from <be-json> -template <raw> -out <be-cz> [-report <csv>]   # translated ru-ru onto cz-cz (mod replacing Czech); each female/male slot mirrors ru-ru, empty where ru-ru has no text
 go run ./tools/cp77loc verify -in <raw>      # every string re-encoded must be byte-identical
 ```
 
@@ -131,8 +131,17 @@ glitch text are never exported, except with `update`/`ref -extra-from <lang>`: a
 placeholder-only variant whose counterpart in that language has real text then
 becomes a unit (its tags stripped), so a mod built on that language can cover it.
 Glitch text is deliberately corrupted Zalgo
-stored as Latin-1 mojibake, detected by U+0080–U+009F characters (a single
-stray one inside real Cyrillic text is a localization typo, not glitch text). The analyzer
+stored as Latin-1 mojibake, detected by runs of Latin-1 characters holding at least
+two U+0080–U+009F characters. A string with nothing readable around the run is
+never exported; one with readable Cyrillic text around it (an e-mail whose end is
+corrupted) is exported with each run as a locked tag, and `port` replaces its
+glitch counterpart in the target language. A single stray control character inside
+real Cyrillic text is a localization typo: plain text. Speech-tag attribute
+values may hold escaped quotes (`o="… \"word\" …"`) and nested `<Rich …>` tags, which are
+locked; a JSON clipboard dump (`{"RootType": …, "Data": {"value": "TEXT"}}`, the oxygen
+bar label) is locked around its `value`. `update` re-splits a carried-over
+translation made under an older markup split, and re-queues one whose markup it
+cannot match. The analyzer
 also marks both kinds verbatim (`cyberpunk2077.Untranslatable`), as a safety
 net. `import` goes back through
 `internal/wolvenkit.Splice`, which rewrites **only** the variant string literals

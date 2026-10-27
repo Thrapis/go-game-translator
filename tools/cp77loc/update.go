@@ -20,6 +20,7 @@ import (
 type carryStats struct {
 	Same        int // source unchanged, translation carried over
 	SamePending int // source unchanged, but it had no translation before
+	Broken      int // source unchanged, but the translation lost its markup: translate again
 	Changed     int // source text differs from the previous version
 	Added       int // id not in the previous version
 	Removed     int // previous id that no longer exists
@@ -28,6 +29,7 @@ type carryStats struct {
 func (s *carryStats) add(o carryStats) {
 	s.Same += o.Same
 	s.SamePending += o.SamePending
+	s.Broken += o.Broken
 	s.Changed += o.Changed
 	s.Added += o.Added
 	s.Removed += o.Removed
@@ -61,8 +63,16 @@ func carry(src, prev []xliff.Unit, keepChanged bool) (out []xliff.Unit, need []s
 		case p.Target == nil:
 			st.SamePending++
 		default:
-			st.Same++
 			u.Target, u.State = p.Target, p.State
+			if !sameCodes(p.Source, u.Source) {
+				u.Target = retag(p.Target, u.Source)
+			}
+			if sameCodes(u.Source, u.Target) {
+				st.Same++
+			} else {
+				st.Broken++
+				u.Target, u.State = nil, ""
+			}
 		}
 		if u.Target == nil {
 			need = append(need, u.ID)
@@ -75,6 +85,19 @@ func carry(src, prev []xliff.Unit, keepChanged bool) (out []xliff.Unit, need []s
 		}
 	}
 	return out, need, st
+}
+
+// retag re-splits a target into text and codes the way the analyzer now splits
+// source markup, for a translation made when some markup was still plain text.
+// It returns tgt unchanged when the codes still do not match src.
+func retag(tgt, src []xliff.Piece) []xliff.Piece {
+	if tgt == nil {
+		return nil
+	}
+	if t := toXLIFF(cyberpunk2077.Pieces(xliff.Plain(tgt))); sameCodes(src, t) {
+		return t
+	}
+	return tgt
 }
 
 // applyFill gives every unit that has no target the machine translation in tr,
@@ -215,7 +238,7 @@ func cmdUpdate(args []string) error {
 
 	fmt.Printf("wrote %d units into %d files -> %s\n", units, files, *out)
 	fmt.Printf("  carried over: %d translations (%d rejected for broken tags in %s)\n", st.Same, rejected, *prev)
-	fmt.Printf("  source changed: %d, new: %d, were untranslated: %d\n", st.Changed, st.Added, st.SamePending)
+	fmt.Printf("  source changed: %d, new: %d, were untranslated: %d, translation lost its markup: %d\n", st.Changed, st.Added, st.SamePending, st.Broken)
 	fmt.Printf("  removed: %d units, plus %d units in %d files that no longer exist\n", st.Removed, goneUnits, goneFiles)
 	fmt.Printf("  still without a translation: %d (machine translations filled in: %d, dropped for tag mismatch: %d)\n", need-filled, filled, dropped)
 	return nil

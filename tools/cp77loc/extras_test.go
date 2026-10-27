@@ -58,3 +58,21 @@ func TestExportRowsWithExtras(t *testing.T) {
 		t.Errorf("placeholders skipped = %d, want 1", sk.placeholders)
 	}
 }
+
+// Readable text with a glitch effect around it is exported (the effect becomes
+// a locked tag); a string that is nothing but effect is not.
+func TestExportRowsMixedGlitch(t *testing.T) {
+	mixed := "Данные недоступны?&%4*£fÌ¸Ì\u0083"
+	f := &wolvenkit.File{Entries: []wolvenkit.Entry{
+		entry("1", mixed, ""),
+		entry("2", "CÌ\u0091o", ""),
+	}}
+	var sk skipped
+	rows, _ := exportRows(f, &sk)
+	if len(rows) != 1 || rows[0].ID != "1" || rows[0].Source != mixed {
+		t.Errorf("rows = %+v, want only id 1 with the whole text", rows)
+	}
+	if sk.glitch != 1 {
+		t.Errorf("glitch skipped = %d, want 1", sk.glitch)
+	}
+}

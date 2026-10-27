@@ -19,9 +19,10 @@ import (
 type portResult struct {
 	// Tr maps template variant keys to the text to write (see wolvenkit.Splice).
 	Tr map[string]string
-	// Blank holds male variant keys to empty. The game shows the female text
-	// to a male V when the male variant is empty, so a Czech male text with no
-	// distinct source counterpart is removed rather than left or duplicated.
+	// Blank holds variant keys to empty: template text whose slot has no
+	// counterpart in the source. The game shows the female text to a male V
+	// when the male variant is empty, so a Czech male text with no distinct
+	// source counterpart is removed rather than left or duplicated.
 	Blank map[string]bool
 	// OnlyTemplate are template entries whose id is missing from the source:
 	// they keep their own text.
@@ -29,27 +30,31 @@ type portResult struct {
 	// OnlyFrom are source entries whose id is missing from the template: they
 	// have nowhere to go.
 	OnlyFrom []wolvenkit.Entry
-	// Gaps are template variants with real text that the source cannot
-	// replace (it is empty, a VO placeholder or glitch text), so they keep
-	// their own language: strings missing from the source localization.
-	Gaps []portGap
+	// Emptied are template variants with real text that were emptied because
+	// the source has nothing usable for that slot (it is empty, a VO
+	// placeholder or glitch text): strings missing from the source
+	// localization.
+	Emptied []portGap
 }
 
-// portGap is one variant of a template entry left untranslated, and why.
+// portGap is one variant of a template entry emptied, and why.
 type portGap struct {
 	Entry wolvenkit.Entry
 	Male  bool
 	Why   string
 }
 
-// portEntries matches the entries of from to those of tmpl by id. A template
-// variant gets the source text of the same variant; when the template has a
-// male variant and the source has no distinct male text, the template's male
-// variant is emptied (the game then uses the female text for male V); an empty
+// portEntries matches the entries of from to those of tmpl by id. Each slot of
+// a template entry mirrors the same slot of the source entry: it gets the source
+// text of that variant, or is emptied when the source has none (the game then
+// uses the female text for male V). Some ids have a male text and no female
+// one, so a male text is never copied into the female slot. A source male text
+// identical to the female one is not a distinct male text. An empty template
 // male variant is filled when the source has a distinct male text. Template
-// glitch text is a deliberate effect and is never overwritten; a template VO
-// placeholder is, when the source has real text. Source text that is empty, a
-// VO placeholder or glitch text is never copied: those strings are not
+// glitch text is a deliberate effect and is never overwritten, unless the
+// source holds readable text around the same kind of effect; a template VO
+// placeholder is overwritten when the source has real text. Source text that is
+// empty, a VO placeholder or glitch text is never copied: those strings are not
 // translatable.
 func portEntries(tmpl, from *wolvenkit.File) portResult {
 	src := make(map[string]wolvenkit.Entry, len(from.Entries))
@@ -70,39 +75,45 @@ func portEntries(tmpl, from *wolvenkit.File) portResult {
 			r.OnlyTemplate = append(r.OnlyTemplate, e)
 			continue
 		}
-		// The female variant is the universal one. A source with text only in
-		// its male variant (female empty or a placeholder) still has to fill a
-		// template female variant that holds text; an empty one is a male-only
-		// line and stays that way.
-		fem, fromMale := s.Female, false
-		if e.Female != "" && (s.Female == "" || cyberpunk2077.IsVOPlaceholder(s.Female)) && usable(s.Male) != "" {
-			fem, fromMale = s.Male, true
+		// Each slot mirrors the same slot of the source. Some ids have a male
+		// text and no female one, so the female slot is never filled from the
+		// male text.
+		//
+		// A template slot with nothing to mirror is emptied. A VO placeholder
+		// there is only a stub, so it is emptied only when the id has real text
+		// in some other slot of the source.
+		hasText := usable(s.Female) != "" || usable(s.Male) != ""
+		leftover := func(text string) bool {
+			return text != "" && (portable(text) || (hasText && !cyberpunk2077.IsGlitchText(text)))
 		}
-		if !cyberpunk2077.IsGlitchText(e.Female) {
-			if v := usable(fem); v != "" {
+		if !cyberpunk2077.IsGlitchText(e.Female) || cyberpunk2077.HasGlitchRun(usable(s.Female)) {
+			switch v := usable(s.Female); {
+			case v != "":
 				r.Tr[e.Key(false)] = v
-			} else if portable(e.Female) && e.Female != "" {
-				r.Gaps = append(r.Gaps, portGap{Entry: e, Why: unusableWhy(fem)})
+			case leftover(e.Female):
+				r.Blank[e.Key(false)] = true
+				r.Emptied = append(r.Emptied, portGap{Entry: e, Why: unusableWhy(s.Female)})
 			}
 		}
-		if e.HasMale && !cyberpunk2077.IsGlitchText(e.Male) {
+		if e.HasMale && (!cyberpunk2077.IsGlitchText(e.Male) || cyberpunk2077.HasGlitchRun(usable(s.Male))) {
 			m := usable(s.Male)
-			if m == s.Female || fromMale {
+			if m == s.Female {
 				m = "" // not a distinct male text
 			}
 			switch {
 			case m != "":
 				r.Tr[e.Key(true)] = m
-			case e.Male == "":
-				// Already empty: the female text serves male V.
-			case usable(fem) != "":
+			case !leftover(e.Male):
+				// Already empty (the female text serves male V), or not ours to change.
+			default:
 				r.Blank[e.Key(true)] = true
-			case portable(e.Male):
-				why := unusableWhy(s.Male)
-				if s.Male == "" {
-					why = unusableWhy(s.Female)
+				if usable(s.Female) == "" {
+					why := unusableWhy(s.Male)
+					if s.Male == "" {
+						why = unusableWhy(s.Female)
+					}
+					r.Emptied = append(r.Emptied, portGap{Entry: e, Male: true, Why: why})
 				}
-				r.Gaps = append(r.Gaps, portGap{Entry: e, Male: true, Why: why})
 			}
 		}
 	}
@@ -148,12 +159,12 @@ func cmdPort(args []string) error {
 	out := fl.String("out", "", "tree to write (required)")
 	srcDir := fl.String("source-dir", "ru-ru", "language folder inside -from")
 	dstDir := fl.String("target-dir", "cz-cz", "language folder inside -template to port into")
-	report := fl.String("report", "", "CSV file listing ids on one side only and strings the source cannot fill")
+	report := fl.String("report", "", "CSV file listing ids on one side only and slots emptied because the source has no text for them")
 	refs := fl.String("ref-dirs", "en-us,ua-ua", "language folders inside -template shown in the report as reference texts")
 	required(fl, args, "from", "template", "out")
 	refDirs := splitList(*refs)
 
-	var files, replaced, blanked, kept, noSource, onlyT, onlyF, gaps int
+	var files, replaced, blanked, kept, noSource, onlyT, onlyF, emptied int
 	var rows [][]string
 	done := map[string]bool{}
 	err := walkFiles(*tmpl, func(rel string) error {
@@ -229,8 +240,8 @@ func cmdPort(args []string) error {
 			onlyF++
 			rows = append(rows, row(e.ID, false, "only in "+*srcDir))
 		}
-		for _, gp := range r.Gaps {
-			gaps++
+		for _, gp := range r.Emptied {
+			emptied++
 			rows = append(rows, row(gp.Entry.ID, gp.Male, gp.Why))
 		}
 		return writeFile(dst, nb)
@@ -258,10 +269,10 @@ func cmdPort(args []string) error {
 			return err
 		}
 	}
-	fmt.Printf("ported %d files: %d strings replaced, %d %s male variants removed (female serves male V), %d kept as %s\n", files, replaced, blanked, *dstDir, kept, *dstDir)
+	fmt.Printf("ported %d files: %d strings replaced, %d %s variants emptied (no %s text for that slot), %d kept as %s\n", files, replaced, blanked, *dstDir, *srcDir, kept, *dstDir)
 	fmt.Printf("  ids only in %s: %d (keep their %s text); ids only in %s: %d (dropped)\n", *dstDir, onlyT, *dstDir, *srcDir, onlyF)
 	fmt.Printf("  files only in %s: %d (copied unchanged); files only in %s: %d -> %s\n", *dstDir, noSource, *srcDir, orphan, *out)
-	fmt.Printf("  %s strings the %s text cannot fill (empty, VO placeholder or glitch text), so they stay in %s: %d\n", *dstDir, *srcDir, *dstDir, gaps)
+	fmt.Printf("  of those, %s slots with text that %s has nothing for (empty, VO placeholder or glitch text): %d\n", *dstDir, *srcDir, emptied)
 	return nil
 }
 

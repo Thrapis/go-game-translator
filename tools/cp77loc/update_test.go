@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/Thrapis/go-game-translator/internal/game/cyberpunk2077"
 	"github.com/Thrapis/go-game-translator/internal/xliff"
 )
 
@@ -88,5 +89,50 @@ func TestApplyFill(t *testing.T) {
 	}
 	if units[2].Target != nil {
 		t.Errorf("c got a target without a translation: %+v", units[2])
+	}
+}
+
+// A translation made while a speech tag was still plain text carries over when
+// the analyzer later locks the tag as markup: the target is re-split from its
+// own text, so it keeps the translation and its codes match the new source.
+func TestCarryRetagsTarget(t *testing.T) {
+	raw := `<mothertongue l="creo" m="Mèd" b="" a=", того же. <Rich color=\"C\">kon</>."/>`
+	be := `<mothertongue l="creo" m="Mèd" b="" a=", таго ж. <Rich color=\"C\">kon</>."/>`
+	oldPieces := func(head string) []xliff.Piece {
+		return []xliff.Piece{
+			{Text: `<mothertongue l="creo" m="Mèd" b="" a=", ` + head + `. `},
+			{Text: `<Rich color=\"C\">`, Code: true},
+			{Text: "kon"},
+			{Text: "</>", Code: true},
+			{Text: `."/>`},
+		}
+	}
+	src := []xliff.Unit{{ID: "1", Source: toXLIFF(cyberpunk2077.Pieces(raw))}}
+	prev := []xliff.Unit{{ID: "1", Source: oldPieces("того же"), Target: oldPieces("таго ж"), State: "translated"}}
+
+	out, need, st := carry(src, prev, false)
+	if len(need) != 0 || st.Same != 1 {
+		t.Fatalf("need = %v, stats = %+v, want the translation carried over", need, st)
+	}
+	if got := xliff.Plain(out[0].Target); got != be || out[0].State != "translated" {
+		t.Errorf("target = %q (%s), want %q", got, out[0].State, be)
+	}
+	if !sameCodes(out[0].Source, out[0].Target) {
+		t.Errorf("target codes %+v do not match the source codes %+v", out[0].Target, out[0].Source)
+	}
+}
+
+// A translation whose markup text was damaged (here the space before a=) cannot
+// be matched to the new codes: it goes back to the units that need translating
+// instead of being carried over as a target that import would reject.
+func TestCarryBrokenTargetNeedsTranslation(t *testing.T) {
+	raw := `<mothertongue l="mex" m="x" b="Да, " a="? Нет."/>`
+	oldSrc := []xliff.Piece{{Text: raw}}
+	prev := []xliff.Unit{{ID: "1", Source: oldSrc, Target: txt(`<mothertongue l="mex" m="x" b="Так, "a="? Не."/>`), State: "translated"}}
+	src := []xliff.Unit{{ID: "1", Source: toXLIFF(cyberpunk2077.Pieces(raw))}}
+
+	out, need, st := carry(src, prev, false)
+	if out[0].Target != nil || !reflect.DeepEqual(need, []string{"1"}) || st.Broken != 1 || st.Same != 0 {
+		t.Errorf("out = %+v, need = %v, stats = %+v, want the unit back in need as broken", out[0], need, st)
 	}
 }
