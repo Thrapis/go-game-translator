@@ -80,7 +80,7 @@ func TestTranslatable(t *testing.T) {
 		{samples[11], nil}, // no Cyrillic
 		{samples[12], nil},
 		{samples[15], nil}, // malformed tag (a="/>): kept whole as markup, never corrupted further
-		{samples[16], nil}, // glitch text: has Cyrillic, but C1 controls mark it untranslatable
+		{samples[16], []string{" Файл повреждён "}}, // readable text between glitch runs: only the runs are kept
 	}
 	for _, c := range cases {
 		got := translatable(c.in)

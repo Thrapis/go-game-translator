@@ -21,6 +21,7 @@ const (
 	typeSpam              // symbol runs: **bold**, #^*$^&@
 	typeVerbatim          // text never sent to the model: VO placeholders, glitch text, no Cyrillic
 	typeSymbol            // characters the ru->be model mangles: — … –, rare Cyrillic, kaomoji, §
+	typeGlitch            // a run of Zalgo mojibake inside readable text
 )
 
 var (
@@ -28,13 +29,21 @@ var (
 	//   <kiroshi l="jpn" o="original" t="translation" b="before" a="after"/>
 	//   <mothertongue l="mex" m="pez gordo" b="before " a=" after"/>
 	// o and m hold the foreign-language original and are kept as markup.
-	attrTagRe = regexp.MustCompile(`<(?:kiroshi|mothertongue)(?:\s+[A-Za-z_]+="[^"]*")*\s*/?>`)
-	attrRe    = regexp.MustCompile(`\s+([A-Za-z_]+)="([^"]*)"`)
+	//
+	// A value may hold escaped quotes (o="… \"word\" …"): the foreign-language
+	// original is copied into the string as it was written.
+	attrTagRe = regexp.MustCompile(`<(?:kiroshi|mothertongue)(?:\s+[A-Za-z_]+="(?:[^"\\]|\\.)*")*\s*/?>`)
+	attrRe    = regexp.MustCompile(`\s+([A-Za-z_]+)="((?:[^"\\]|\\.)*)"`)
 	tagRe     = regexp.MustCompile(`</?[A-Za-z][^<>]*>|</>|<…>`)
-	varRe     = regexp.MustCompile(`\{[^{}]*\}`)
-	breakRe   = regexp.MustCompile(`\\n|\r?\n`)
-	controlRe = regexp.MustCompile(`[\t\r]`)
-	spamRe    = regexp.MustCompile(`[*#$%^&@~|_=+]{2,}`)
+	// clipHeadRe and clipTailRe frame a string that is a JSON clipboard dump of
+	// the editor, {"RootType": "…", "Data": {"value": "TEXT"}}, which the game
+	// shows as TEXT (the oxygen bar label): only the value is text.
+	clipHeadRe = regexp.MustCompile(`^\{\s*"RootType":\s*"[^"]*",\s*"Data":\s*\{\s*"value":\s*"`)
+	clipTailRe = regexp.MustCompile(`"\s*\}\s*\}$`)
+	varRe      = regexp.MustCompile(`\{[^{}]*\}`)
+	breakRe    = regexp.MustCompile(`\\n|\r?\n`)
+	controlRe  = regexp.MustCompile(`[\t\r]`)
+	spamRe     = regexp.MustCompile(`[*#$%^&@~|_=+]{2,}`)
 	// symbolRe matches runs of characters the ru->be model does not reproduce
 	// (measured on the full base onscreens run), which are therefore kept
 	// verbatim. Kept as text: Russian/Belarusian letters, printable ASCII,
@@ -51,27 +60,42 @@ var textAttrs = map[string]bool{"t": true, "b": true, "a": true}
 type pattern struct {
 	re  *regexp.Regexp
 	typ int
+	// find replaces re when set: it returns the [start, end) of the first match.
+	find func(string) []int
+}
+
+func (p pattern) locate(s string) []int {
+	if p.find != nil {
+		return p.find(s)
+	}
+	return p.re.FindStringIndex(s)
 }
 
 // topLevel is tried in order; on equal start the earlier pattern wins, so a
 // speech tag is expanded before the generic tag rule can swallow it.
 var topLevel = []pattern{
-	{attrTagRe, -1},
-	{tagRe, typeTag},
-	{varRe, typeVariable},
-	{breakRe, typeBreak},
-	{controlRe, typeControl},
-	{spamRe, typeSpam},
-	{symbolRe, typeSymbol},
+	{re: attrTagRe, typ: -1},
+	{re: clipHeadRe, typ: typeTag},
+	{re: clipTailRe, typ: typeTag},
+	{re: tagRe, typ: typeTag},
+	{re: varRe, typ: typeVariable},
+	{re: breakRe, typ: typeBreak},
+	{re: controlRe, typ: typeControl},
+	{re: spamRe, typ: typeSpam},
+	{find: firstGlitchRun, typ: typeGlitch},
+	{re: symbolRe, typ: typeSymbol},
 }
 
-// inAttr applies inside a translatable attribute value (no nested tags).
+// inAttr applies inside a translatable attribute value (markup tags such as
+// <Rich …> may be nested in it).
 var inAttr = []pattern{
-	{varRe, typeVariable},
-	{breakRe, typeInnerBreak},
-	{controlRe, typeControl},
-	{spamRe, typeSpam},
-	{symbolRe, typeSymbol},
+	{re: tagRe, typ: typeTag},
+	{re: varRe, typ: typeVariable},
+	{re: breakRe, typ: typeInnerBreak},
+	{re: controlRe, typ: typeControl},
+	{re: spamRe, typ: typeSpam},
+	{find: firstGlitchRun, typ: typeGlitch},
+	{re: symbolRe, typ: typeSymbol},
 }
 
 type analyzer struct{}
@@ -88,7 +112,7 @@ func tokenize(s string, pats []pattern) []*markup.StringPart {
 	for len(s) > 0 {
 		first, last, typ := len(s), len(s), 0
 		for _, p := range pats {
-			if loc := p.re.FindStringIndex(s); loc != nil && loc[0] < first {
+			if loc := p.locate(s); loc != nil && loc[0] < first {
 				first, last, typ = loc[0], loc[1], p.typ
 			}
 		}
@@ -222,7 +246,7 @@ func Pieces(s string) []Piece {
 	for _, p := range (analyzer{}).Analyze(s).Parts {
 		code := false
 		switch p.Type {
-		case typeTag, typeVariable, typeBreak, typeInnerBreak, typeControl:
+		case typeTag, typeVariable, typeBreak, typeInnerBreak, typeControl, typeGlitch:
 			code = true
 		}
 		if n := len(out); n > 0 && out[n-1].Code == code {

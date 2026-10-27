@@ -95,6 +95,7 @@ func Parse(b []byte) (*File, error) {
 // Stats counts what Splice did to the variant literals it visited.
 type Stats struct {
 	Replaced int // literal rewritten with a translation
+	Blanked  int // non-empty literal emptied (SpliceBlanking)
 	Kept     int // non-empty literal left as it was
 }
 
@@ -109,6 +110,13 @@ const (
 // its decoded literal must equal the parsed value, else Splice fails rather
 // than write text into the wrong entry.
 func Splice(b []byte, f *File, tr map[string]string) ([]byte, Stats, error) {
+	return SpliceBlanking(b, f, tr, nil)
+}
+
+// SpliceBlanking is Splice that also empties every non-empty variant whose key
+// is in blank (and has no translation in tr). An empty variant makes the game
+// fall back to the female text, so this is how a male variant is removed.
+func SpliceBlanking(b []byte, f *File, tr map[string]string, blank map[string]bool) ([]byte, Stats, error) {
 	var fem, male []int // entry indices, in file order, that carry each property
 	for i, e := range f.Entries {
 		if e.HasFemale {
@@ -174,7 +182,15 @@ func Splice(b []byte, f *File, tr map[string]string) ([]byte, Stats, error) {
 
 		v := tr[e.Key(isMale)]
 		if v == "" {
-			if want != "" {
+			switch {
+			case want == "":
+			case blank[e.Key(isMale)]:
+				out.Write(line[:head])
+				out.WriteString(`""`)
+				out.Write(line[tail:])
+				st.Blanked++
+				continue
+			default:
 				st.Kept++
 			}
 			out.Write(line)

@@ -121,6 +121,42 @@ func TestSpliceReplaces(t *testing.T) {
 	}
 }
 
+func TestSpliceBlanking(t *testing.T) {
+	b := []byte(fixture)
+	f, _ := Parse(b)
+	// 41@male has text and is emptied; 40@male is already empty and counts for
+	// nothing; the female variants are replaced as usual.
+	out, st, err := SpliceBlanking(b, f,
+		map[string]string{"40": "Навіны"},
+		map[string]bool{"41@male": true, "40@male": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Replaced != 1 || st.Blanked != 1 || st.Kept != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+	g, err := Parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Entries[0].Female != "Навіны" || g.Entries[0].Male != "" || g.Entries[1].Male != "" || g.Entries[1].Female != "Готова <Rich>" {
+		t.Fatalf("reparse: %+v", g.Entries)
+	}
+	want := strings.Replace(fixture,
+		`"maleVariant": `+Quote("Готов")+`,`, `"maleVariant": "",`, 1)
+	want = strings.Replace(want,
+		`"femaleVariant": `+Quote("Новости")+`,`,
+		`"femaleVariant": `+Quote("Навіны")+`,`, 1)
+	if string(out) != want {
+		t.Fatalf("got:\n%s", out)
+	}
+	// A nil blank set behaves like Splice.
+	same, _, err := SpliceBlanking(b, f, nil, nil)
+	if err != nil || !bytes.Equal(same, b) {
+		t.Fatalf("nil blank set changed bytes (err %v)", err)
+	}
+}
+
 func TestSpliceMismatch(t *testing.T) {
 	b := []byte(fixture)
 	f, _ := Parse(b)
