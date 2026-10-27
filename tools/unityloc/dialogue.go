@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -50,18 +48,6 @@ func fieldValue(e map[string]any, title string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// setFieldValue sets the value of the entry field with the given title and
-// reports whether the field exists.
-func setFieldValue(e map[string]any, title, value string) bool {
-	for _, f := range asList(e["fields"]) {
-		if fm := asMap(f); fm["title"] == title {
-			fm["value"] = value
-			return true
-		}
-	}
-	return false
 }
 
 // dialogueEntries lists every dialogue entry of the database in file order.
@@ -121,32 +107,6 @@ func dialogueLines(db map[string]any, source string, want ...string) ([]dialogue
 		out = append(out, l)
 	}
 	return out, nil
-}
-
-// applyDialogue writes the translations (by articy id) into the given fields
-// of the matching entries, in place. It returns how many entries changed and
-// the ids that matched no entry.
-func applyDialogue(db map[string]any, repl map[string]string, fields ...string) (n int, missing []string) {
-	seen := map[string]bool{}
-	for _, e := range dialogueEntries(db) {
-		id, _ := fieldValue(e, fieldID)
-		text, ok := repl[id]
-		if !ok {
-			continue
-		}
-		seen[id] = true
-		for _, f := range fields {
-			setFieldValue(e, f, text)
-		}
-		n++
-	}
-	for id := range repl {
-		if !seen[id] {
-			missing = append(missing, id)
-		}
-	}
-	sort.Strings(missing)
-	return n, missing
 }
 
 func dialoguePieces(s string) []xliff.Piece {
@@ -259,131 +219,6 @@ func runStoryXLIFF(args []string) error {
 	}
 	fmt.Printf("wrote %d dialogue lines (%d with a target, %d dropped for tag mismatch) -> %s\n", len(f.Units), targets-len(dropped), len(dropped), *out)
 	return nil
-}
-
-// runStoryMod writes translated dialogue into the database and emits the
-// changed bundle and patched catalog under <out>, laid out like the game root.
-func runStoryMod(args []string) error {
-	fl := flag.NewFlagSet("story-mod", flag.ExitOnError)
-	game := fl.String("game", "", "game root folder (required)")
-	xlf := fl.String("xliff", "", "translated XLIFF from story-xliff (required)")
-	out := fl.String("out", "", "output folder, laid out like the game root (required)")
-	name := fl.String("db", "Restory Story", "name of the dialogue database object")
-	lang := fl.String("replace", "ru", "language field to overwrite (also overwrites the base \""+fieldBase+"\" field)")
-	fl.Parse(args)
-	if *game == "" || *xlf == "" || *out == "" {
-		fl.Usage()
-		os.Exit(2)
-	}
-	aa, aaRel, err := gameAA(*game)
-	if err != nil {
-		return err
-	}
-	fh, err := os.Open(*xlf)
-	if err != nil {
-		return err
-	}
-	xf, problems, err := xliff.Read(fh)
-	fh.Close()
-	if err != nil {
-		return err
-	}
-	for _, p := range problems {
-		fmt.Fprintf(os.Stderr, "warn: %s: target ignored: %s\n", p.ID, p.Reason)
-	}
-	repl := map[string]string{}
-	for _, u := range xf.Units {
-		if u.Target != nil && strings.TrimSpace(xliff.Plain(u.Target)) != "" {
-			repl[u.ID] = xliff.Plain(u.Target)
-		}
-	}
-	if len(repl) == 0 {
-		return fmt.Errorf("%s has no translated targets", *xlf)
-	}
-
-	bundlePath, b, f, obj, db, err := locateObject(aa, *name)
-	if err != nil {
-		return err
-	}
-	// The writer must reproduce the object exactly before it is trusted with an edit.
-	if again, err := obj.Write(db); err != nil || !bytes.Equal(again, obj.Raw()) {
-		return fmt.Errorf("re-serialising the unchanged %q does not reproduce its bytes (err=%v); refusing to edit it", *name, err)
-	}
-	before, err := dialogueLines(db, *lang, fieldBase)
-	if err != nil {
-		return err
-	}
-	n, missing := applyDialogue(db, repl, *lang, fieldBase)
-	if len(missing) > 0 {
-		fmt.Fprintf(os.Stderr, "warn: %d XLIFF ids are not in the dialogue and were skipped: %v\n", len(missing), missing)
-	}
-	nf, err := f.ReplaceObject(obj, db)
-	if err != nil {
-		return err
-	}
-	bundleOut, bundle, catOut, cat, err := finishBundle(aa, aaRel, *out, bundlePath, b, f, nf, func(data []byte) error {
-		return verifyDialogue(data, *name, *lang, before, repl)
-	})
-	if err != nil {
-		return err
-	}
-	for _, w := range []fileWrite{{bundleOut, bundle}, {catOut, cat}} {
-		if err := os.MkdirAll(filepath.Dir(w.path), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(w.path, w.data, 0o644); err != nil {
-			return err
-		}
-		fmt.Printf("wrote %s (%d bytes)\n", w.path, len(w.data))
-	}
-	fmt.Printf("replaced %d of %d dialogue lines\n", n, len(repl))
-	return nil
-}
-
-// verifyDialogue re-opens a rebuilt bundle and checks that the database has
-// the same entries as before, the translated ones with the new text and all
-// others unchanged.
-func verifyDialogue(data []byte, name, lang string, before []dialogueLine, repl map[string]string) error {
-	b, err := unityfs.Parse(data)
-	if err != nil {
-		return err
-	}
-	files, err := b.Files()
-	if err != nil {
-		return err
-	}
-	for _, f := range files {
-		for _, o := range f.Objects {
-			if o.ClassID != unityfs.ClassMonoBehavior || !o.HasTree() || o.Size < 64<<10 {
-				continue
-			}
-			m, err := o.Read()
-			if err != nil || m["m_Name"] != name {
-				continue
-			}
-			after, err := dialogueLines(m, lang, fieldBase)
-			if err != nil {
-				return err
-			}
-			if len(after) != len(before) {
-				return fmt.Errorf("%d dialogue lines after rebuild, want %d", len(after), len(before))
-			}
-			for i, l := range before {
-				want := map[string]string{}
-				for k, v := range l.Text {
-					want[k] = v
-					if t, ok := repl[l.ID]; ok {
-						want[k] = t
-					}
-				}
-				if after[i].ID != l.ID || !reflect.DeepEqual(after[i].Text, want) {
-					return fmt.Errorf("entry %s differs after rebuild", l.ID)
-				}
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("dialogue database %q missing after rebuild", name)
 }
 
 // gameAA resolves <game>/<*_Data>/StreamingAssets/aa and its path relative

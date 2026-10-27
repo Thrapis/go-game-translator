@@ -38,7 +38,6 @@ type Object struct {
 	typ      *Type
 	file     *File
 	off      int64
-	tableOff int // position of this object's byte-start field in the file
 }
 
 // ParseFile parses a serialized file (format 17+).
@@ -89,7 +88,6 @@ func ParseFile(b []byte) (*File, error) {
 	for i := 0; i < nObjs; i++ {
 		r.align(4)
 		o := &Object{file: f, PathID: r.i64()}
-		o.tableOff = r.pos
 		var start int64
 		if f.Version >= 22 {
 			start = r.i64()
@@ -223,64 +221,6 @@ func (o *Object) Read() (map[string]any, error) {
 	return m, nil
 }
 
-// Replace returns a copy of the file in which object o has the given
-// serialized bytes. The new data is appended after the existing data and the
-// object's table entry is repointed to it; the old bytes become unreferenced
-// padding. Nothing else in the file moves, so other objects and their ids are
-// untouched.
-func (f *File) Replace(o *Object, raw []byte) ([]byte, error) {
-	if o.file != f {
-		return nil, fmt.Errorf("unityfs: object does not belong to this file")
-	}
-	out := append([]byte(nil), f.data...)
-	for len(out)%8 != 0 {
-		out = append(out, 0)
-	}
-	dataOff := o.off - o.start()
-	start := int64(len(out)) - dataOff
-	out = append(out, raw...)
-
-	put := func(at int, v uint64, n int) {
-		for i := 0; i < n; i++ {
-			shift := 8 * i
-			if !f.le {
-				shift = 8 * (n - 1 - i)
-			}
-			out[at+i] = byte(v >> shift)
-		}
-	}
-	width := 4
-	if f.Version >= 22 {
-		width = 8
-	}
-	if width == 4 && start > 0xFFFFFFFF {
-		return nil, fmt.Errorf("unityfs: file too large for a 32-bit object offset")
-	}
-	put(o.tableOff, uint64(start), width)
-	put(o.tableOff+width, uint64(len(raw)), 4)
-	// File size lives in the (always big-endian) header.
-	if f.Version >= 22 {
-		for i := 0; i < 8; i++ {
-			out[24+i] = byte(uint64(len(out)) >> (8 * (7 - i)))
-		}
-	} else {
-		for i := 0; i < 4; i++ {
-			out[4+i] = byte(uint64(len(out)) >> (8 * (3 - i)))
-		}
-	}
-	return out, nil
-}
-
-// start is the object's offset relative to the data area, recovered from the
-// table so Replace does not need to store the data offset separately.
-func (o *Object) start() int64 {
-	r := &reader{b: o.file.data, pos: o.tableOff, le: o.file.le}
-	if o.file.Version >= 22 {
-		return r.i64()
-	}
-	return int64(r.u32())
-}
-
 // TextAsset reads a TextAsset's name and script from its fixed layout
 // {m_Name string, m_Script string}, so it also works on player files built
 // without type trees (resources.assets). A type tree, when present, must
@@ -309,50 +249,3 @@ func (o *Object) TextAsset() (name string, script []byte, err error) {
 	return name, script, nil
 }
 
-// ReplaceTextAsset returns a copy of the file in which the TextAsset o has
-// the given script (its m_Script bytes) and everything else unchanged.
-func (f *File) ReplaceTextAsset(o *Object, script []byte) ([]byte, error) {
-	if _, _, err := o.TextAsset(); err != nil {
-		return nil, err
-	}
-	r := &reader{b: o.Raw(), le: f.le}
-	n := int(r.u32())
-	r.take(n)
-	r.align(4)
-	raw := append([]byte(nil), o.Raw()[:r.pos]...)
-	var ln [4]byte
-	if f.le {
-		ln = [4]byte{byte(len(script)), byte(len(script) >> 8), byte(len(script) >> 16), byte(len(script) >> 24)}
-	} else {
-		ln = [4]byte{byte(len(script) >> 24), byte(len(script) >> 16), byte(len(script) >> 8), byte(len(script))}
-	}
-	raw = append(raw, ln[:]...)
-	raw = append(raw, script...)
-	for len(raw)%4 != 0 {
-		raw = append(raw, 0)
-	}
-	return f.Replace(o, raw)
-}
-
-// Write serialises a value shaped like the result of Read back into the
-// object's binary form, using the object's type tree.
-func (o *Object) Write(v map[string]any) ([]byte, error) {
-	if o.typ.Tree == nil {
-		return nil, fmt.Errorf("class %d has no type tree (stripped build)", o.ClassID)
-	}
-	w := &writer{le: o.file.le}
-	if err := writeValue(w, o.typ.Tree, v); err != nil {
-		return nil, err
-	}
-	return w.b, nil
-}
-
-// ReplaceObject returns a copy of the file in which object o holds the
-// serialised form of v (a value shaped like the result of o.Read).
-func (f *File) ReplaceObject(o *Object, v map[string]any) ([]byte, error) {
-	raw, err := o.Write(v)
-	if err != nil {
-		return nil, err
-	}
-	return f.Replace(o, raw)
-}

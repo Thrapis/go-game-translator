@@ -7,7 +7,6 @@
 package unityfs
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 )
@@ -23,10 +22,9 @@ const (
 // Bundle is a decompressed UnityFS archive: a set of named nodes, each either
 // a serialized file or a raw resource stream (.resS).
 type Bundle struct {
-	Version       uint32
-	PlayerVersion string // always "5.x.x"
-	UnityVersion  string
-	Nodes         []Node
+	Version      uint32
+	UnityVersion string
+	Nodes        []Node
 
 	data []byte
 }
@@ -63,7 +61,7 @@ func Parse(b []byte) (*Bundle, error) {
 		return nil, fmt.Errorf("unityfs: not a UnityFS bundle (signature %q)", sig)
 	}
 	bu := &Bundle{Version: r.u32()}
-	bu.PlayerVersion = r.cstr()
+	r.cstr() // player version, always "5.x.x"
 	bu.UnityVersion = r.cstr()
 	r.i64() // total size
 	compSize := int(r.u32())
@@ -173,85 +171,3 @@ func (b *Bundle) Files() ([]*File, error) {
 	}
 	return out, nil
 }
-
-// SetNode replaces the contents of the node at path.
-func (b *Bundle) SetNode(path string, data []byte) error {
-	for i := range b.Nodes {
-		if b.Nodes[i].Path != path {
-			continue
-		}
-		var out []byte
-		for j, n := range b.Nodes {
-			for len(out)%16 != 0 {
-				out = append(out, 0)
-			}
-			d := b.Data(n)
-			if j == i {
-				d = data
-			}
-			b.Nodes[j].Offset = int64(len(out))
-			b.Nodes[j].Size = int64(len(d))
-			out = append(out, d...)
-		}
-		b.data = out
-		return nil
-	}
-	return fmt.Errorf("unityfs: no node %q in bundle", path)
-}
-
-// blockSize is the uncompressed chunk size Marshal splits the data into.
-const blockSize = 128 << 10
-
-// Marshal serialises the bundle with no compression (block info and data are
-// stored as-is), which every UnityFS reader accepts. The result is larger
-// than the LZ4 original but needs no compressor.
-func (b *Bundle) Marshal() []byte {
-	info := &out{}
-	info.Write(make([]byte, 16)) // data hash, unused by the runtime
-	nBlocks := (len(b.data) + blockSize - 1) / blockSize
-	info.u32(uint32(nBlocks))
-	for left := len(b.data); left > 0; left -= blockSize {
-		n := min(left, blockSize)
-		info.u32(uint32(n))
-		info.u32(uint32(n))
-		info.u16(compNone)
-	}
-	info.u32(uint32(len(b.Nodes)))
-	for _, n := range b.Nodes {
-		info.u64(uint64(n.Offset))
-		info.u64(uint64(n.Size))
-		info.u32(n.Flags)
-		info.cstr(n.Path)
-	}
-
-	h := &out{}
-	h.cstr("UnityFS")
-	h.u32(b.Version)
-	h.cstr(b.PlayerVersion)
-	h.cstr(b.UnityVersion)
-	sizePos := h.Len()
-	h.u64(0) // total size, patched below
-	h.u32(uint32(info.Len()))
-	h.u32(uint32(info.Len()))
-	h.u32(0x40) // block info and directory combined, uncompressed
-	if b.Version >= 7 {
-		for h.Len()%16 != 0 {
-			h.WriteByte(0)
-		}
-	}
-	h.Write(info.Bytes())
-	h.Write(b.data)
-	res := h.Bytes()
-	for i := 0; i < 8; i++ {
-		res[sizePos+i] = byte(uint64(len(res)) >> (8 * (7 - i)))
-	}
-	return res
-}
-
-// out is a big-endian byte builder for bundle headers.
-type out struct{ bytes.Buffer }
-
-func (o *out) u16(v uint16)  { o.Write([]byte{byte(v >> 8), byte(v)}) }
-func (o *out) u32(v uint32)  { o.u16(uint16(v >> 16)); o.u16(uint16(v)) }
-func (o *out) u64(v uint64)  { o.u32(uint32(v >> 32)); o.u32(uint32(v)) }
-func (o *out) cstr(s string) { o.WriteString(s); o.WriteByte(0) }
