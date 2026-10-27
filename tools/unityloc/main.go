@@ -13,6 +13,7 @@
 // bundle and catalog in a folder laid out like the game root.
 //
 //	unityloc mod -game "<game root>" -xliff <translated.xlf> -out <mod folder>
+//	unityloc xliff-update -prev <translated.xlf> -new <fresh-ru.xlf> -out <updated.xlf>   (run from the repo root)
 //	unityloc story-xliff -game "<game root>" -out <dialogue.xlf>
 //	unityloc story-mod -game "<game root>" -xliff <translated-dialogue.xlf> -out <mod folder>
 //
@@ -53,6 +54,8 @@ func main() {
 		err = runXLIFF(os.Args[2:])
 	case "mod":
 		err = runMod(os.Args[2:])
+	case "xliff-update":
+		err = runXLIFFUpdate(os.Args[2:])
 	case "story-xliff":
 		err = runStoryXLIFF(os.Args[2:])
 	case "story-mod":
