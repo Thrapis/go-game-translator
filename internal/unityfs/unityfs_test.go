@@ -278,50 +278,6 @@ func TestCommonStrings(t *testing.T) {
 	}
 }
 
-func TestReplaceTextAssetAndMarshal(t *testing.T) {
-	file := serializedTextAsset("Localization", `{"a": "привет"}`)
-	b, err := Parse(bundle(file, compLZ4))
-	if err != nil {
-		t.Fatal(err)
-	}
-	files, err := b.Files()
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := files[0]
-	newScript := `{"a": "прывітанне", "b": "ў" }` // length not a multiple of 4
-	nf, err := f.ReplaceTextAsset(f.Objects[0], []byte(newScript))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := b.SetNode(b.Nodes[0].Path, nf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Re-open the written bundle from scratch and read the object back.
-	b2, err := Parse(b.Marshal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b2.Version != b.Version || b2.UnityVersion != "6000.0.0f1" || b2.PlayerVersion != "5.x.x" {
-		t.Fatalf("header not preserved: %+v", b2)
-	}
-	files2, err := b2.Files()
-	if err != nil || len(files2) != 1 || len(files2[0].Objects) != 1 {
-		t.Fatalf("files=%v err=%v", files2, err)
-	}
-	m, err := files2[0].Objects[0].Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m["m_Name"] != "Localization" || m["m_Script"] != newScript {
-		t.Fatalf("decoded %v", m)
-	}
-	if err := b.SetNode("missing", nil); err == nil {
-		t.Error("unknown node must be an error")
-	}
-}
-
 func TestTextAssetWithoutTypeTree(t *testing.T) {
 	file := buildSerialized("Localization", `{"a": "привет"}`, false)
 	f, err := ParseFile(file)
@@ -336,17 +292,6 @@ func TestTextAssetWithoutTypeTree(t *testing.T) {
 	if err != nil || name != "Localization" || string(script) != `{"a": "привет"}` {
 		t.Fatalf("got %q %q %v", name, script, err)
 	}
-	nf, err := f.ReplaceTextAsset(o, []byte(`{"a": "ў"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f2, err := ParseFile(nf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, script, err := f2.Objects[0].TextAsset(); err != nil || string(script) != `{"a": "ў"}` {
-		t.Fatalf("after replace: %q %v", script, err)
-	}
 	// Trailing bytes after m_Script mean the layout assumption is wrong.
 	padded, err := ParseFile(append(append([]byte(nil), file...), 0, 0, 0, 0))
 	if err != nil {
@@ -358,73 +303,3 @@ func TestTextAssetWithoutTypeTree(t *testing.T) {
 	}
 }
 
-func TestWriteValueRoundTrip(t *testing.T) {
-	arr := func(elem string) *TypeNode {
-		return &TypeNode{Type: "Array", Children: []*TypeNode{{Type: "int", Name: "size"}, {Type: elem, Name: "data"}}}
-	}
-	item := &TypeNode{Type: "Item", Name: "data", Children: []*TypeNode{
-		{Type: "string", Name: "title"},
-		{Type: "short", Name: "n"},
-		{Type: "bool", Name: "on", MetaFlags: metaAlign},
-	}}
-	root := &TypeNode{Type: "T", Children: []*TypeNode{
-		{Type: "UInt8", Name: "b"},
-		{Type: "float", Name: "f"},
-		{Type: "double", Name: "d"},
-		{Type: "long long", Name: "id"},
-		{Type: "unsigned int", Name: "u"},
-		{Type: "vector", Name: "items", Children: []*TypeNode{arr("Item")}},
-		{Type: "vector", Name: "raw", Children: []*TypeNode{arr("UInt8")}},
-		{Type: "string", Name: "s"},
-	}}
-	root.Children[5].Children[0].Children[1] = item
-
-	b := &w{le: true}
-	b.WriteByte(7)
-	b.u32(0x3FC00000) // 1.5f
-	b.u64(0x4005BF0A8B145769)
-	b.u64(0xFFFFFFFFFFFFFFFE) // -2
-	b.u32(4000000000)
-	b.u32(2) // two items
-	for _, s := range []string{"ab", "ы"} {
-		b.str(s)
-		b.u16(0xFFFF) // -1
-		b.WriteByte(1)
-		b.align(4)
-	}
-	b.u32(3)
-	b.Write([]byte{9, 8, 7}) // no alignment flag: the string follows at offset 3 mod 4
-	b.str("конец")
-
-	r := &reader{b: b.Bytes(), le: true}
-	v := readValue(r, root)
-	if r.err != nil || r.pos != len(r.b) {
-		t.Fatalf("read: err=%v pos=%d/%d", r.err, r.pos, len(r.b))
-	}
-	out := &writer{le: true}
-	if err := writeValue(out, root, v); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(out.b, b.Bytes()) {
-		t.Fatalf("round trip differs:\n got %x\nwant %x", out.b, b.Bytes())
-	}
-
-	// Editing a value changes only that value.
-	m := v.(map[string]any)
-	m["items"].([]any)[1].(map[string]any)["title"] = "новы загаловак"
-	out = &writer{le: true}
-	if err := writeValue(out, root, m); err != nil {
-		t.Fatal(err)
-	}
-	r = &reader{b: out.b, le: true}
-	got := readValue(r, root).(map[string]any)
-	if r.err != nil || got["items"].([]any)[1].(map[string]any)["title"] != "новы загаловак" || got["s"] != "конец" {
-		t.Fatalf("edited value not read back: %v err=%v", got, r.err)
-	}
-
-	// A value of the wrong type is an error, not corrupt output.
-	m["b"] = "x"
-	if err := writeValue(&writer{le: true}, root, m); err == nil {
-		t.Error("wrong value type must be an error")
-	}
-}

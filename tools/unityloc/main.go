@@ -8,18 +8,19 @@
 //
 // export pulls the "Localization" TextAsset (all languages in one JSON) out of
 // the bundles and splits it into one flat <Language>.json per language; xliff
-// builds an XLIFF 1.2 file from two of those languages; mod overwrites one
-// language (Russian) with translated XLIFF targets and writes the changed
-// bundle and catalog in a folder laid out like the game root.
+// builds an XLIFF 1.2 file from two of those languages.
 //
-//	unityloc mod -game "<game root>" -xliff <translated.xlf> -out <mod folder>
-//	unityloc story-xliff -game "<game root>" -out <dialogue.xlf>
-//	unityloc story-mod -game "<game root>" -xliff <translated-dialogue.xlf> -out <mod folder>
+//	unityloc story-xliff -game "<game root>" -out <dialogue.xlf> [-target en]
+//	unityloc xliff-update -prev <translated.xlf> -new <fresh-ru.xlf> -out <updated.xlf>   (run from the repo root)
+//	unityloc overlay -ui <Localization.xlf> -dialogue <RestoryStory.xlf> -out <translations.json>
 //
-// story-xliff / story-mod handle the dialogue, which lives in the Dialogue
-// System database "Restory Story": one XLIFF unit per entry (source = the "ru"
-// field, optional target = another language field such as "en"), and the
-// translation written back into the bundle plus the patched catalog.
+// story-xliff exports the dialogue, which lives in the Dialogue System
+// database "Restory Story": one XLIFF unit per entry (source = the "ru" field,
+// optional target = another language field such as "en"). xliff-update brings a
+// translated XLIFF up to date after a game update: translations whose source is
+// unchanged are kept, the rest is machine-translated with the local Lingvanex
+// server. overlay turns the translated XLIFF files into the translations.json
+// that the BepInEx plugin applies at run time.
 //
 // The game's files are only read.
 package main
@@ -51,12 +52,12 @@ func main() {
 		err = runExport(os.Args[2:])
 	case "xliff":
 		err = runXLIFF(os.Args[2:])
-	case "mod":
-		err = runMod(os.Args[2:])
+	case "overlay":
+		err = runOverlay(os.Args[2:])
+	case "xliff-update":
+		err = runXLIFFUpdate(os.Args[2:])
 	case "story-xliff":
 		err = runStoryXLIFF(os.Args[2:])
-	case "story-mod":
-		err = runStoryMod(os.Args[2:])
 	default:
 		usage()
 	}

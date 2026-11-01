@@ -52,23 +52,6 @@ func TestDialogueLines(t *testing.T) {
 	}
 }
 
-func TestApplyDialogueChangesOnlyTargetFields(t *testing.T) {
-	db := testDB()
-	n, missing := applyDialogue(db, map[string]string{"0xA1": "Прывітанне! [b]Так[/b]", "0xZZ": "x"}, "ru", fieldBase)
-	if n != 1 || !reflect.DeepEqual(missing, []string{"0xZZ"}) {
-		t.Fatalf("n=%d missing=%v", n, missing)
-	}
-	e := dialogueEntries(db)
-	for title, want := range map[string]string{"ru": "Прывітанне! [b]Так[/b]", fieldBase: "Прывітанне! [b]Так[/b]", "en": "Hi! [b]Yes[/b]", fieldID: "0xA1"} {
-		if got, _ := fieldValue(e[0], title); got != want {
-			t.Errorf("%s = %q, want %q", title, got, want)
-		}
-	}
-	if got, _ := fieldValue(e[1], "ru"); got != "Ок" {
-		t.Errorf("untouched entry changed: %q", got)
-	}
-}
-
 func TestDialoguePiecesLockTags(t *testing.T) {
 	got := dialoguePieces("а [b]б[/b]\nв")
 	want := []xliff.Piece{{Text: "а "}, {Text: "[b]", Code: true}, {Text: "б"}, {Text: "[/b]", Code: true}, {Text: "\nв"}}
